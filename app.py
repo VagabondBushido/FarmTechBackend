@@ -11,10 +11,20 @@ import os
 app = Flask(__name__)
 CORS(app)
 
+# Get the absolute path to the model directory
+MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vgg16_model.keras')
+MODEL_PATH = os.path.join(MODEL_DIR, 'model.weights.h5')
+
+print(f"Looking for model at: {MODEL_PATH}")
+
 # Load model
 try:
-    model = load_model('vgg16_model.keras', compile=False)
-    print("Model loaded successfully")
+    if os.path.exists(MODEL_PATH):
+        model = load_model(MODEL_PATH, compile=False)
+        print("Model loaded successfully")
+    else:
+        print(f"Model file not found at {MODEL_PATH}")
+        model = None
 except Exception as e:
     print(f"Error loading model: {str(e)}")
     model = None
@@ -37,7 +47,8 @@ def load_image(url):
 def health():
     return jsonify({
         "status": "healthy",
-        "model_loaded": model is not None
+        "model_loaded": model is not None,
+        "model_path": MODEL_PATH
     })
 
 @app.route('/predict', methods=['POST'])
