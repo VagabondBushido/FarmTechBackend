@@ -4,245 +4,220 @@ import numpy as np
 from PIL import Image
 import requests
 import io
-import logging
-import os
 from flask_cors import CORS
+from tensorflow.keras.applications.vgg16 import preprocess_input
+from tensorflow.keras.preprocessing import image
+import logging
+import json
+from tensorflow.keras.applications.vgg16 import VGG16
+from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout
+from tensorflow.keras.models import Sequential
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
 CORS(app)
 
+def fix_layer_config(layer_config):
+    """Fix layer configuration by handling dtype and other compatibility issues"""
+    if isinstance(layer_config, dict):
+        # Fix InputLayer batch_shape
+        if layer_config.get('class_name') == 'InputLayer' and 'config' in layer_config:
+            if 'batch_shape' in layer_config['config']:
+                shape = layer_config['config']['batch_shape']
+                if shape[0] is None:  # Remove batch dimension
+                    layer_config['config']['input_shape'] = shape[1:]
+                else:
+                    layer_config['config']['input_shape'] = shape
+                del layer_config['config']['batch_shape']
+        
+        # Fix dtype configuration
+        if 'config' in layer_config and 'dtype' in layer_config['config']:
+            dtype_config = layer_config['config']['dtype']
+            if isinstance(dtype_config, dict):
+                # Convert new format to string
+                layer_config['config']['dtype'] = dtype_config.get('config', {}).get('name', 'float32')
+        
+        # Fix shape configurations in inbound_nodes
+        if 'inbound_nodes' in layer_config:
+            for node in layer_config['inbound_nodes']:
+                if isinstance(node, dict) and 'args' in node:
+                    for arg in node['args']:
+                        if isinstance(arg, dict) and 'config' in arg:
+                            if 'shape' in arg['config']:
+                                # Convert shape to list if it's a string
+                                if isinstance(arg['config']['shape'], str):
+                                    try:
+                                        # Parse shape string to list
+                                        shape_str = arg['config']['shape'].strip('[]').split(',')
+                                        arg['config']['shape'] = [int(s.strip()) if s.strip() != 'None' else None for s in shape_str]
+                                    except:
+                                        # If parsing fails, use default shape
+                                        arg['config']['shape'] = [None, 180, 180, 3]
+        
+        # Process nested configs
+        for key, value in layer_config.items():
+            if isinstance(value, dict):
+                layer_config[key] = fix_layer_config(value)
+            elif isinstance(value, list):
+                layer_config[key] = [fix_layer_config(item) if isinstance(item, dict) else item for item in value]
+    
+    return layer_config
+
+def load_model():
+    try:
+        # Create model with VGG16 base
+        base_model = VGG16(weights='imagenet', include_top=False, input_shape=(180, 180, 3))
+        
+        # Create the full model
+        model = Sequential([
+            base_model,
+            GlobalAveragePooling2D(),
+            Dense(64, activation='relu'),
+            Dropout(0.5),
+            Dense(38, activation='softmax')
+        ])
+        
+        # Compile the model
+        model.compile(
+            optimizer='adam',
+            loss='categorical_crossentropy',
+            metrics=['accuracy']
+        )
+        
+        # Load custom weights
+        try:
+            model.load_weights('vgg16_model.keras/model.weights.h5', by_name=True, skip_mismatch=True)
+            logging.info("Successfully loaded custom layer weights")
+        except Exception as e:
+            logging.warning(f"Could not load custom weights: {str(e)}")
+        
+        logging.info(f"Model loaded successfully from: vgg16_model.keras")
+        return model
+    except Exception as e:
+        logging.error(f"Error loading model: {str(e)}")
+        raise
+
 # Load the trained model
-MODEL_PATH = "model/model.h5"
+MODEL_DIR = "vgg16_model.keras"
 try:
-    model = tf.keras.models.load_model(MODEL_PATH)
-    logger.info(f"Model loaded successfully: {MODEL_PATH}")
+    # Create model with VGG16 base (ImageNet weights)
+    base_model = tf.keras.applications.VGG16(
+        include_top=False,
+        weights='imagenet',  # Always use ImageNet weights for VGG16 base
+        input_shape=(180, 180, 3)
+    )
+    base_model.trainable = False  # Freeze VGG16 base if you want only custom layers to be trainable
+
+    # Custom layers
+    x = base_model.output
+    x = tf.keras.layers.GlobalAveragePooling2D()(x)
+    x = tf.keras.layers.Dense(64, activation='relu')(x)
+    x = tf.keras.layers.Dropout(0.5)(x)
+    outputs = tf.keras.layers.Dense(38, activation='softmax')(x)
+
+    # Create model
+    model = tf.keras.models.Model(inputs=base_model.input, outputs=outputs)
+
+    # Load only custom weights (top layers)
+    try:
+        model.load_weights(f"{MODEL_DIR}/model.weights.h5", by_name=True, skip_mismatch=True)
+        logger.info("Successfully loaded custom layer weights (top layers)")
+    except Exception as e:
+        logger.warning(f"Could not load custom weights: {e}")
+
+    # Compile model
+    model.compile(
+        loss='categorical_crossentropy',
+        metrics=['accuracy']
+    )
+    logger.info(f"Model loaded successfully from: {MODEL_DIR}")
 except Exception as e:
     logger.error(f"Failed to load model: {e}")
     model = None
 
-# Class labels with crop names and diseases - EXPANDED to include ALL 38 classes
-CLASS_LABELS = {
-    0: ("Apple", "Apple Scab"),
-    1: ("Apple", "Black Rot"),
-    2: ("Apple", "Cedar Apple Rust"),
-    3: ("Apple", "Healthy"),
-    4: ("Blueberry", "Healthy"),
-    5: ("Cherry", "Powdery Mildew"),
-    6: ("Cherry", "Healthy"),
-    7: ("Corn", "Cercospora Leaf Spot"),
-    8: ("Corn", "Common Rust"),
-    9: ("Corn", "Northern Leaf Blight"),
-    10: ("Corn", "Healthy"),
-    11: ("Grape", "Black Rot"),
-    12: ("Grape", "Esca (Black Measles)"),
-    13: ("Grape", "Leaf Blight"),
-    14: ("Grape", "Healthy"),
-    15: ("Orange", "Huanglongbing (Citrus Greening)"),
-    16: ("Peach", "Bacterial Spot"),
-    17: ("Peach", "Healthy"),
-    18: ("Pepper", "Bacterial Spot"),
-    19: ("Pepper", "Healthy"),
-    20: ("Potato", "Early Blight"),
-    21: ("Potato", "Late Blight"),
-    22: ("Potato", "Healthy"),
-    23: ("Raspberry", "Healthy"),
-    24: ("Soybean", "Healthy"),
-    25: ("Squash", "Powdery Mildew"),
-    26: ("Strawberry", "Leaf Scorch"),
-    27: ("Strawberry", "Healthy"),
-    28: ("Tomato", "Bacterial Spot"),
-    29: ("Tomato", "Early Blight"),
-    30: ("Tomato", "Leaf Mold"),
-    31: ("Tomato", "Septoria Leaf Spot"),
-    32: ("Tomato", "Spider Mites"),
-    33: ("Tomato", "Target Spot"),
-    34: ("Tomato", "Yellow Leaf Curl Virus"),
-    35: ("Tomato", "Mosaic Virus"),
-    36: ("Tomato", "Healthy"),
-    37: ("Background", "No Plant")  # Add missing class 37
-}
+class_names = [
+    'Apple___Apple_scab',
+    'Apple___Black_rot',
+    'Apple___Cedar_apple_rust',
+    'Apple___healthy',
+    'Blueberry___healthy',
+    'Cherry_(including_sour)___Powdery_mildew',
+    'Cherry_(including_sour)___healthy',
+    'Corn_(maize)___Cercospora_leaf_spot Gray_leaf_spot',
+    'Corn_(maize)___Common_rust',
+    'Corn_(maize)___Northern_Leaf_Blight',
+    'Corn_(maize)___healthy',
+    'Grape___Black_rot',
+    'Grape___Esca_(Black_Measles)',
+    'Grape___Leaf_blight_(Isariopsis_Leaf_Spot)',
+    'Grape___healthy',
+    'Orange___Haunglongbing_(Citrus_greening)',
+    'Peach___Bacterial_spot',
+    'Peach___healthy',
+    'Pepper,_bell___Bacterial_spot',
+    'Pepper,_bell___healthy',
+    'Potato___Early_blight',
+    'Potato___Late_blight',
+    'Potato___healthy',
+    'Raspberry___healthy',
+    'Soybean___healthy',
+    'Squash___Powdery_mildew',
+    'Strawberry___Leaf_scorch',
+    'Strawberry___healthy',
+    'Tomato___Bacterial_spot',
+    'Tomato___Early_blight',
+    'Tomato___Late_blight',
+    'Tomato___Leaf_Mold',
+    'Tomato___Septoria_leaf_spot',
+    'Tomato___Spider_mites Two-spotted_spider_mite',
+    'Tomato___Target_Spot',
+    'Tomato___Tomato_Yellow_Leaf_Curl_Virus',
+    'Tomato___Tomato_mosaic_virus',
+    'Tomato___healthy'
+]
 
-# Create a reversed version for indexing check
-CLASS_LABELS_1_BASED = {
-    1: ("Apple", "Apple Scab"),
-    2: ("Apple", "Black Rot"),
-    3: ("Apple", "Cedar Apple Rust"),
-    4: ("Apple", "Healthy"),
-    5: ("Blueberry", "Healthy"),
-    6: ("Cherry", "Powdery Mildew"),
-    7: ("Cherry", "Healthy"),
-    8: ("Corn", "Cercospora Leaf Spot"),
-    9: ("Corn", "Common Rust"),
-    10: ("Corn", "Northern Leaf Blight"),
-    11: ("Corn", "Healthy"),
-    12: ("Grape", "Black Rot"),
-    13: ("Grape", "Esca (Black Measles)"),
-    14: ("Grape", "Leaf Blight"),
-    15: ("Grape", "Healthy"),
-    16: ("Orange", "Huanglongbing (Citrus Greening)"),
-    17: ("Peach", "Bacterial Spot"),
-    18: ("Peach", "Healthy"),
-    19: ("Pepper", "Bacterial Spot"),
-    20: ("Pepper", "Healthy"),
-    21: ("Potato", "Early Blight"),
-    22: ("Potato", "Late Blight"),
-    23: ("Potato", "Healthy"),
-    24: ("Raspberry", "Healthy"),
-    25: ("Soybean", "Healthy"),
-    26: ("Squash", "Powdery Mildew"),
-    27: ("Strawberry", "Leaf Scorch"),
-    28: ("Strawberry", "Healthy"),
-    29: ("Tomato", "Bacterial Spot"),
-    30: ("Tomato", "Early Blight"),
-    31: ("Tomato", "Leaf Mold"),
-    32: ("Tomato", "Septoria Leaf Spot"),
-    33: ("Tomato", "Spider Mites"),
-    34: ("Tomato", "Target Spot"),
-    35: ("Tomato", "Yellow Leaf Curl Virus"),
-    36: ("Tomato", "Mosaic Virus"),
-    37: ("Tomato", "Healthy"),
-    38: ("Background", "No Plant")
-}
-
-def preprocess_image(image_url, save_debug=True):
-    """
-    Preprocess image to match the model's exact preprocessing
-    """
-    try:
-        # Download image from URL
-        response = requests.get(image_url)
-        image = Image.open(io.BytesIO(response.content))
-        
-        # Save original image for debugging
-        if save_debug:
-            if not os.path.exists('debug'):
-                os.makedirs('debug')
-            image.save(f"debug/original_image.jpg")
-        
-        # Convert to RGB if needed
-        if image.mode != 'RGB':
-            image = image.convert('RGB')
-        
-        # Resize to match model input shape
-        image = image.resize((224, 224))
-
-        
-        # Save resized image for debugging
-        if save_debug:
-            image.save(f"debug/resized_image.jpg")
-        
-        # Convert to numpy array
-        image_array = np.array(image)
-        
-        # IMPORTANT: Use tf.keras.applications.vgg16.preprocess_input for VGG16
-        # This matches the preprocessing in your model's layers
-        from tensorflow.keras.applications.vgg16 import preprocess_input
-        processed_image = preprocess_input(image_array.copy())
-        
-        # Add batch dimension
-        batched = np.expand_dims(processed_image, axis=0)
-        
-        return batched
-    
-    except Exception as e:
-        logger.error(f"Error preprocessing image: {e}")
-        raise
+def preprocess_image(image_url):
+    headers = {"User-Agent": "Mozilla/5.0"}
+    response = requests.get(image_url, headers=headers)
+    if response.status_code != 200:
+        raise Exception(f"Failed to fetch image: {response.status_code}")
+    img = Image.open(io.BytesIO(response.content))
+    if img.mode != 'RGB':
+        img = img.convert('RGB')
+    img = img.resize((180, 180))
+    img_array = image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)
+    img_array = preprocess_input(img_array)
+    return img_array
 
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
+        print("Received request")
         data = request.json
+        print("Request data:", data)
         image_url = data.get("image_url")
-        
+        print("Image URL:", image_url)
         if not image_url:
             return jsonify({"error": "No image URL provided"}), 400
-        
-        logger.info(f"Received prediction request for image: {image_url}")
-        
-        # Preprocess image using VGG16's preprocessing
         input_image = preprocess_image(image_url)
-        
-        # Make prediction
-        logger.info("Making prediction...")
+        print("Image preprocessed")
         predictions = model.predict(input_image)
-        
-        # Log raw predictions for debugging
-        logger.info(f"Raw prediction shape: {predictions.shape}")
-        logger.info(f"Full prediction array: {predictions[0]}")
-        
-        # Get top class and confidence
-        class_index = np.argmax(predictions[0])
-        logger.info(f"Raw predicted class index: {class_index}")
-        
-        # Check both 0-based and 1-based indexing results
-        zero_based_crop, zero_based_disease = CLASS_LABELS.get(class_index, ("Unknown", "Unknown"))
-        one_based_crop, one_based_disease = CLASS_LABELS_1_BASED.get(class_index + 1, ("Unknown", "Unknown"))
-        
-        logger.info(f"0-based indexing result: Crop={zero_based_crop}, Disease={zero_based_disease}")
-        logger.info(f"1-based indexing result: Crop={one_based_crop}, Disease={one_based_disease}")
-        
-        # Check if tomato healthy has high probability
-        tomato_healthy_0_based_prob = float(predictions[0][36]) if predictions.shape[1] > 36 else 0
-        tomato_healthy_1_based_prob = float(predictions[0][36]) if predictions.shape[1] > 36 else 0
-        logger.info(f"Tomato Healthy (class 36) probability: {tomato_healthy_0_based_prob}")
-        logger.info(f"Tomato Healthy (class 37 adjusted) probability: {tomato_healthy_1_based_prob}")
-        
-        # Get top 5 indices for debugging
-        top_indices = np.argsort(predictions[0])[-5:][::-1]
-        logger.info(f"Top 5 prediction indices: {top_indices}")
-        logger.info(f"Top 5 prediction values: {[predictions[0][i] for i in top_indices]}")
-        
-        # Return results for both indexing methods
-        confidence = float(predictions[0][class_index])
-        
-        # Get top 3 predictions with both indexing systems
-        top_3_indices = np.argsort(predictions[0])[-3:][::-1]
-        top_3_zero_based = [
-            {
-                "class_index": int(i),
-                "crop": CLASS_LABELS.get(i, ("Unknown", "Unknown"))[0],
-                "disease": CLASS_LABELS.get(i, ("Unknown", "Unknown"))[1],
-                "probability": float(predictions[0][i])
-            }
-            for i in top_3_indices
-        ]
-        
-        top_3_one_based = [
-            {
-                "class_index": int(i+1),  # Adjusted to 1-based
-                "crop": CLASS_LABELS_1_BASED.get(i+1, ("Unknown", "Unknown"))[0],
-                "disease": CLASS_LABELS_1_BASED.get(i+1, ("Unknown", "Unknown"))[1],
-                "probability": float(predictions[0][i])
-            }
-            for i in top_3_indices
-        ]
-        
+        print("Prediction done")
+        predicted_class_index = int(np.argmax(predictions, axis=1)[0])
+        predicted_class = class_names[predicted_class_index]
+        predicted_probability = float(predictions[0][predicted_class_index])
         result = {
-            "original_class_index": int(class_index),
-            "zero_based_result": {
-                "class": int(class_index),
-                "crop": zero_based_crop,
-                "disease": zero_based_disease,
-                "confidence": confidence,
-                "top_3_predictions": top_3_zero_based
-            },
-            "one_based_result": {
-                "class": int(class_index) + 1,  # Adjusted to 1-based
-                "crop": one_based_crop,
-                "disease": one_based_disease,
-                "confidence": confidence,
-                "top_3_predictions": top_3_one_based
-            }
+            "predicted_class_index": predicted_class_index,
+            "predicted_class": predicted_class,
+            "confidence": predicted_probability
         }
-        
-        logger.info(f"Prediction results: {result}")
-        
+        print("Returning result:", result)
         return jsonify(result)
-    
     except Exception as e:
         logger.error(f"Error during prediction: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
@@ -260,7 +235,7 @@ def test_urls():
         results = []
         for url in urls:
             # Process image
-            input_image = preprocess_image(url, save_debug=False)
+            input_image = preprocess_image(url)
             
             # Predict
             predictions = model.predict(input_image)
@@ -306,4 +281,4 @@ def health_check():
     })
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, port=5000)  # Using port 5004
