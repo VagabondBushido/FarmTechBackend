@@ -25,8 +25,8 @@ try:
     if os.path.exists(MODEL_CONFIG) and os.path.exists(MODEL_WEIGHTS):
         # Load model architecture from config
         with open(MODEL_CONFIG, 'r') as f:
-            model_config = json.load(f)
-        model = model_from_json(model_config)
+            model_json = f.read()
+        model = model_from_json(model_json)
         # Load weights
         model.load_weights(MODEL_WEIGHTS)
         print("Model loaded successfully")
@@ -92,5 +92,5 @@ def predict():
         }), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))  # Changed to default Flask port
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
