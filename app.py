@@ -95,7 +95,8 @@ def load_model():
         # Load custom weights
         model_path = os.path.join(os.path.dirname(__file__), 'vgg16_model.keras', 'model.weights.h5')
         try:
-            model.load_weights(model_path, by_name=True, skip_mismatch=True)
+            # Try loading weights without by_name parameter first
+            model.load_weights(model_path)
             logger.info(f"Successfully loaded custom layer weights from {model_path}")
         except Exception as e:
             logger.warning(f"Could not load custom weights: {str(e)}")
@@ -171,31 +172,29 @@ def preprocess_image(image_url):
 
 @app.route('/predict', methods=['POST'])
 def predict():
+    if model is None:
+        return jsonify({'error': 'Model not loaded'}), 500
+        
     try:
-        print("Received request")
-        data = request.json
-        print("Request data:", data)
-        image_url = data.get("image_url")
-        print("Image URL:", image_url)
-        if not image_url:
-            return jsonify({"error": "No image URL provided"}), 400
-        input_image = preprocess_image(image_url)
-        print("Image preprocessed")
-        predictions = model.predict(input_image)
-        print("Prediction done")
-        predicted_class_index = int(np.argmax(predictions, axis=1)[0])
-        predicted_class = class_names[predicted_class_index]
-        predicted_probability = float(predictions[0][predicted_class_index])
-        result = {
-            "predicted_class_index": predicted_class_index,
-            "predicted_class": predicted_class,
-            "confidence": predicted_probability
-        }
-        print("Returning result:", result)
-        return jsonify(result)
+        data = request.get_json()
+        if not data or 'image_url' not in data:
+            return jsonify({'error': 'No image URL provided'}), 400
+            
+        image_url = data['image_url']
+        img_array = preprocess_image(image_url)
+        
+        predictions = model.predict(img_array)
+        predicted_class = class_names[np.argmax(predictions[0])]
+        confidence = float(np.max(predictions[0]))
+        
+        return jsonify({
+            'prediction': predicted_class,
+            'confidence': confidence
+        })
+        
     except Exception as e:
-        logger.error(f"Error during prediction: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"Prediction error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/test-urls', methods=['POST'])
 def test_urls():
@@ -243,17 +242,9 @@ def test_urls():
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """API health check endpoint"""
-    return jsonify({
-        "status": "healthy", 
-        "model_loaded": model is not None,
-        "class_labels": {
-            "zero_based": "0-37",
-            "one_based": "1-38",
-            "tomato_healthy_zero_based": 36,
-            "tomato_healthy_one_based": 37
-        }
-    })
+    if model is None:
+        return jsonify({'status': 'error', 'message': 'Model not loaded'}), 500
+    return jsonify({'status': 'healthy', 'message': 'Model loaded successfully'})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=port)
