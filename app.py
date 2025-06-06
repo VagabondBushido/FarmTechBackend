@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import tensorflow as tf
 from tensorflow.keras.models import load_model, model_from_json
+from tensorflow.keras.layers import Input
 import numpy as np
 from PIL import Image
 import requests
@@ -30,8 +31,20 @@ try:
     if os.path.exists(MODEL_CONFIG) and os.path.exists(MODEL_WEIGHTS):
         # Load model architecture from config
         with open(MODEL_CONFIG, 'r') as f:
-            model_json = f.read()
+            model_config = json.load(f)
+        
+        # Fix input layer configuration
+        if 'config' in model_config and 'layers' in model_config['config']:
+            for layer in model_config['config']['layers']:
+                if layer['class_name'] == 'InputLayer':
+                    # Remove batch_shape from input layer config
+                    if 'config' in layer and 'batch_shape' in layer['config']:
+                        del layer['config']['batch_shape']
+        
+        # Convert back to JSON string
+        model_json = json.dumps(model_config)
         model = model_from_json(model_json)
+        
         # Load weights
         model.load_weights(MODEL_WEIGHTS)
         logger.info("Model loaded successfully")
