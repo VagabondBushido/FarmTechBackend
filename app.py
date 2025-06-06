@@ -26,9 +26,9 @@ if IS_RAILWAY:
 else:
     MODEL_PATH = 'vgg16_model.keras'
 
-# Load the model
+# Load the model with custom_objects to handle any compatibility issues
 try:
-    model = load_model(MODEL_PATH, compile=False)
+    model = load_model(MODEL_PATH, compile=False, custom_objects={'tf': tf})
     logger.info(f"Model loaded successfully from {MODEL_PATH}")
 except Exception as e:
     logger.error(f"Error loading model: {str(e)}")
@@ -66,7 +66,7 @@ def predict():
         img_array = load_image_from_url(image_url)
         
         # Make prediction
-        predictions = model.predict(img_array)
+        predictions = model.predict(img_array, verbose=0)  # Added verbose=0 to reduce logs
         predicted_class = np.argmax(predictions[0])
         confidence = float(predictions[0][predicted_class])
 
