@@ -9,6 +9,7 @@ from tensorflow.keras.applications.vgg16 import preprocess_input
 from tensorflow.keras.preprocessing import image
 import logging
 import json
+import os
 from tensorflow.keras.applications.vgg16 import VGG16
 from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout
 from tensorflow.keras.models import Sequential
@@ -20,6 +21,9 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
 CORS(app)
+
+# Get port from environment variable or default to 10000
+port = int(os.environ.get('PORT', 10000))
 
 def fix_layer_config(layer_config):
     """Fix layer configuration by handling dtype and other compatibility issues"""
@@ -89,52 +93,23 @@ def load_model():
         )
         
         # Load custom weights
+        model_path = os.path.join(os.path.dirname(__file__), 'vgg16_model.keras', 'model.weights.h5')
         try:
-            model.load_weights('vgg16_model.keras/model.weights.h5', by_name=True, skip_mismatch=True)
-            logging.info("Successfully loaded custom layer weights")
+            model.load_weights(model_path, by_name=True, skip_mismatch=True)
+            logger.info(f"Successfully loaded custom layer weights from {model_path}")
         except Exception as e:
-            logging.warning(f"Could not load custom weights: {str(e)}")
+            logger.warning(f"Could not load custom weights: {str(e)}")
+            logger.info("Continuing with ImageNet weights only")
         
-        logging.info(f"Model loaded successfully from: vgg16_model.keras")
         return model
     except Exception as e:
-        logging.error(f"Error loading model: {str(e)}")
+        logger.error(f"Error loading model: {str(e)}")
         raise
 
 # Load the trained model
-MODEL_DIR = "vgg16_model.keras"
 try:
-    # Create model with VGG16 base (ImageNet weights)
-    base_model = tf.keras.applications.VGG16(
-        include_top=False,
-        weights='imagenet',  # Always use ImageNet weights for VGG16 base
-        input_shape=(180, 180, 3)
-    )
-    base_model.trainable = False  # Freeze VGG16 base if you want only custom layers to be trainable
-
-    # Custom layers
-    x = base_model.output
-    x = tf.keras.layers.GlobalAveragePooling2D()(x)
-    x = tf.keras.layers.Dense(64, activation='relu')(x)
-    x = tf.keras.layers.Dropout(0.5)(x)
-    outputs = tf.keras.layers.Dense(38, activation='softmax')(x)
-
-    # Create model
-    model = tf.keras.models.Model(inputs=base_model.input, outputs=outputs)
-
-    # Load only custom weights (top layers)
-    try:
-        model.load_weights(f"{MODEL_DIR}/model.weights.h5", by_name=True, skip_mismatch=True)
-        logger.info("Successfully loaded custom layer weights (top layers)")
-    except Exception as e:
-        logger.warning(f"Could not load custom weights: {e}")
-
-    # Compile model
-    model.compile(
-        loss='categorical_crossentropy',
-        metrics=['accuracy']
-    )
-    logger.info(f"Model loaded successfully from: {MODEL_DIR}")
+    model = load_model()
+    logger.info("Model loaded successfully")
 except Exception as e:
     logger.error(f"Failed to load model: {e}")
     model = None
@@ -281,4 +256,4 @@ def health_check():
     })
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)  # Using port 5004
+    app.run(host='0.0.0.0', port=port)
