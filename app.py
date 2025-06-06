@@ -8,6 +8,11 @@ import requests
 from io import BytesIO
 import os
 import json
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
@@ -17,8 +22,8 @@ MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vgg16_mode
 MODEL_WEIGHTS = os.path.join(MODEL_DIR, 'model.weights.h5')
 MODEL_CONFIG = os.path.join(MODEL_DIR, 'config.json')
 
-print(f"Looking for model at: {MODEL_WEIGHTS}")
-print(f"Looking for config at: {MODEL_CONFIG}")
+logger.info(f"Looking for model at: {MODEL_WEIGHTS}")
+logger.info(f"Looking for config at: {MODEL_CONFIG}")
 
 # Load model
 try:
@@ -29,17 +34,17 @@ try:
         model = model_from_json(model_json)
         # Load weights
         model.load_weights(MODEL_WEIGHTS)
-        print("Model loaded successfully")
+        logger.info("Model loaded successfully")
     else:
-        print(f"Model files not found at {MODEL_DIR}")
+        logger.error(f"Model files not found at {MODEL_DIR}")
         model = None
 except Exception as e:
-    print(f"Error loading model: {str(e)}")
+    logger.error(f"Error loading model: {str(e)}")
     model = None
 
 def load_image(url):
     try:
-        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
         response.raise_for_status()
         img = Image.open(BytesIO(response.content))
         img = img.resize((224, 224))
@@ -47,8 +52,14 @@ def load_image(url):
         img_array = np.expand_dims(img_array, axis=0)
         img_array = img_array / 255.0  # Normalize
         return img_array
+    except requests.exceptions.Timeout:
+        logger.error("Timeout while fetching image")
+        raise Exception("Timeout while fetching image")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching image: {str(e)}")
+        raise Exception(f"Error fetching image: {str(e)}")
     except Exception as e:
-        print(f"Error loading image: {str(e)}")
+        logger.error(f"Error processing image: {str(e)}")
         raise
 
 @app.route('/health', methods=['GET'])
@@ -63,11 +74,13 @@ def health():
 @app.route('/predict', methods=['POST'])
 def predict():
     if model is None:
+        logger.error("Model not loaded")
         return jsonify({"error": "Model not loaded"}), 500
 
     try:
         data = request.get_json()
         if not data or 'image_url' not in data:
+            logger.error("No image URL provided")
             return jsonify({"error": "No image URL provided"}), 400
 
         # Load and preprocess image
@@ -78,6 +91,7 @@ def predict():
         predicted_class = np.argmax(predictions[0])
         confidence = float(predictions[0][predicted_class])
 
+        logger.info(f"Prediction successful: class {predicted_class} with confidence {confidence}")
         return jsonify({
             "prediction": int(predicted_class),
             "confidence": confidence,
@@ -85,7 +99,7 @@ def predict():
         })
 
     except Exception as e:
-        print(f"Prediction error: {str(e)}")
+        logger.error(f"Prediction error: {str(e)}")
         return jsonify({
             "error": str(e),
             "success": False
@@ -93,4 +107,5 @@ def predict():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 10000))
+    logger.info(f"Starting server on port {port}")
     app.run(host='0.0.0.0', port=port)
