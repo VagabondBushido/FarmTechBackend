@@ -1,29 +1,37 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import tensorflow as tf
-from tensorflow.keras.models import load_model
+from tensorflow.keras.models import load_model, model_from_json
 import numpy as np
 from PIL import Image
 import requests
 from io import BytesIO
 import os
+import json
 
 app = Flask(__name__)
 CORS(app)
 
 # Get the absolute path to the model directory
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vgg16_model.keras')
-MODEL_PATH = os.path.join(MODEL_DIR, 'model.weights.h5')
+MODEL_WEIGHTS = os.path.join(MODEL_DIR, 'model.weights.h5')
+MODEL_CONFIG = os.path.join(MODEL_DIR, 'config.json')
 
-print(f"Looking for model at: {MODEL_PATH}")
+print(f"Looking for model at: {MODEL_WEIGHTS}")
+print(f"Looking for config at: {MODEL_CONFIG}")
 
 # Load model
 try:
-    if os.path.exists(MODEL_PATH):
-        model = load_model(MODEL_PATH, compile=False)
+    if os.path.exists(MODEL_CONFIG) and os.path.exists(MODEL_WEIGHTS):
+        # Load model architecture from config
+        with open(MODEL_CONFIG, 'r') as f:
+            model_config = json.load(f)
+        model = model_from_json(model_config)
+        # Load weights
+        model.load_weights(MODEL_WEIGHTS)
         print("Model loaded successfully")
     else:
-        print(f"Model file not found at {MODEL_PATH}")
+        print(f"Model files not found at {MODEL_DIR}")
         model = None
 except Exception as e:
     print(f"Error loading model: {str(e)}")
@@ -48,7 +56,8 @@ def health():
     return jsonify({
         "status": "healthy",
         "model_loaded": model is not None,
-        "model_path": MODEL_PATH
+        "model_path": MODEL_WEIGHTS,
+        "config_path": MODEL_CONFIG
     })
 
 @app.route('/predict', methods=['POST'])
@@ -83,5 +92,5 @@ def predict():
         }), 500
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
+    port = int(os.environ.get('PORT', 5000))  # Changed to default Flask port
     app.run(host='0.0.0.0', port=port)
