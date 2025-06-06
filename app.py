@@ -1,14 +1,12 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import tensorflow as tf
-from tensorflow.keras.models import load_model, model_from_json
-from tensorflow.keras.layers import Input
+from tensorflow.keras.models import load_model
 import numpy as np
 from PIL import Image
 import requests
 from io import BytesIO
 import os
-import json
 import logging
 
 # Configure logging
@@ -20,36 +18,17 @@ CORS(app)
 
 # Get the absolute path to the model directory
 MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vgg16_model.keras')
-MODEL_WEIGHTS = os.path.join(MODEL_DIR, 'model.weights.h5')
-MODEL_CONFIG = os.path.join(MODEL_DIR, 'config.json')
+MODEL_PATH = os.path.join(MODEL_DIR, 'model.weights.h5')
 
-logger.info(f"Looking for model at: {MODEL_WEIGHTS}")
-logger.info(f"Looking for config at: {MODEL_CONFIG}")
+logger.info(f"Looking for model at: {MODEL_PATH}")
 
 # Load model
 try:
-    if os.path.exists(MODEL_CONFIG) and os.path.exists(MODEL_WEIGHTS):
-        # Load model architecture from config
-        with open(MODEL_CONFIG, 'r') as f:
-            model_config = json.load(f)
-        
-        # Fix input layer configuration
-        if 'config' in model_config and 'layers' in model_config['config']:
-            for layer in model_config['config']['layers']:
-                if layer['class_name'] == 'InputLayer':
-                    # Remove batch_shape from input layer config
-                    if 'config' in layer and 'batch_shape' in layer['config']:
-                        del layer['config']['batch_shape']
-        
-        # Convert back to JSON string
-        model_json = json.dumps(model_config)
-        model = model_from_json(model_json)
-        
-        # Load weights
-        model.load_weights(MODEL_WEIGHTS)
+    if os.path.exists(MODEL_PATH):
+        model = load_model(MODEL_PATH, compile=False)
         logger.info("Model loaded successfully")
     else:
-        logger.error(f"Model files not found at {MODEL_DIR}")
+        logger.error(f"Model file not found at {MODEL_PATH}")
         model = None
 except Exception as e:
     logger.error(f"Error loading model: {str(e)}")
@@ -80,8 +59,7 @@ def health():
     return jsonify({
         "status": "healthy",
         "model_loaded": model is not None,
-        "model_path": MODEL_WEIGHTS,
-        "config_path": MODEL_CONFIG
+        "model_path": MODEL_PATH
     })
 
 @app.route('/predict', methods=['POST'])
