@@ -6,5 +6,11 @@ services:
     startCommand: gunicorn app:app
     envVars:
       - key: PYTHON_VERSION
-        value: 3.9.0
-    plan: free
+        value: 3.10.0
+      - key: PORT
+        value: 10000
+    plan: starter  # Using starter plan for more RAM
+    disk:
+      name: model-storage
+      mountPath: /opt/render/model-storage
+      sizeGB: 1

@@ -12,7 +12,8 @@ import json
 import os
 from tensorflow.keras.applications.vgg16 import VGG16
 from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Dropout
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Sequential, load_model
+from io import BytesIO
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -22,8 +23,14 @@ app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB
 CORS(app)
 
-# Get port from environment variable or default to 10000
-port = int(os.environ.get('PORT', 10000))
+# Determine if we're running on Render
+IS_RENDER = os.environ.get('RENDER', 'false').lower() == 'true'
+
+# Set model path based on environment
+if IS_RENDER:
+    MODEL_PATH = '/opt/render/model-storage/vgg16_model.keras'
+else:
+    MODEL_PATH = 'vgg16_model.keras'
 
 def fix_layer_config(layer_config):
     """Fix layer configuration by handling dtype and other compatibility issues"""
@@ -93,7 +100,7 @@ def load_model():
         )
         
         # Load custom weights
-        model_path = os.path.join(os.path.dirname(__file__), 'vgg16_model.keras', 'model.weights.h5')
+        model_path = MODEL_PATH
         try:
             # Try loading weights without by_name parameter first
             model.load_weights(model_path)
@@ -181,6 +188,7 @@ def predict():
             return jsonify({'error': 'No image URL provided'}), 400
             
         image_url = data['image_url']
+        logger.info(f"Processing image from URL: {image_url}")
         img_array = preprocess_image(image_url)
         
         predictions = model.predict(img_array)
@@ -247,4 +255,5 @@ def health_check():
     return jsonify({'status': 'healthy', 'message': 'Model loaded successfully'})
 
 if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port)
